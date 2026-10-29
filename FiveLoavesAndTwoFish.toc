@@ -1,0 +1,11 @@
+## Interface: 50504
+## Title: Five Loaves and Two Fish
+## Notes: Auction House price history - MoP Classic MVP (Ores & Herbs)
+## Author: Nicholas
+## Version: 0.5.0
+## SavedVariables: FiveLoavesDB
+
+FiveLoavesAndTwoFish.lua
+FiveLoavesSell.lua
+FiveLoavesCraft.lua
+FiveLoavesVendor.lua
