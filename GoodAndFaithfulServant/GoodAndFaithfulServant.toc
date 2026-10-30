@@ -1,0 +1,8 @@
+## Interface: 50504
+## Title: Good and Faithful Servant
+## Notes: Account-wide profit and loss tracker - Auction House vs everything else
+## Author: Nicholas
+## Version: 0.1.0
+## SavedVariables: GoodFaithfulDB
+
+GoodAndFaithfulServant.lua
