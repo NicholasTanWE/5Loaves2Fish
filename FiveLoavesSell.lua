@@ -46,6 +46,7 @@ function Sell:DepthAdjusted(itemID)
         end
     end
     if #list == 0 then return nil end
+    if FiveLoaves.db.matchLowest then return list[1].price, list[1].price, 0 end
     local limit = max(THIN_MIN_UNITS, ceil(total * THIN_SHARE))
     local i, skipped = 1, 0
     while i < #list do
@@ -673,6 +674,20 @@ function FiveLoaves:CreateSellFrame()
     end
     Sell.duration = FiveLoaves.db.sellDuration or 2
 
+    local match = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
+    match:SetSize(22, 22)
+    match:SetPoint("TOPLEFT", 196, -234)
+    match:SetChecked(FiveLoaves.db.matchLowest and true or false)
+    match.text = match.text or match:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    match.text:SetPoint("LEFT", match, "RIGHT", 2, 0)
+    match.text:SetText("Match lowest price (don't ignore thin low tier)")
+    match:SetScript("OnClick", function(self)
+        FiveLoaves.db.matchLowest = self:GetChecked() or nil
+        Sell.userEdited = false
+        Sell:QueryLive()
+        Sell:Update()
+    end)
+    f.matchLowest = match
     -- price reference / totals
     local rule = f:CreateTexture(nil, "ARTWORK")
     rule:SetColorTexture(1, 1, 1, 0.15)

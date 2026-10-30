@@ -13,7 +13,7 @@ local ADDON_NAME, ns = ...
 -- Constants
 -- ============================================================
 local HISTORY_DAYS  = 30
-local MIN_DAYS_FOR_DEALS = 3
+local MIN_DAYS_FOR_DEALS = 1   -- earlier days (excluding today) needed before an item can be flagged
 
 local CLASS_TRADEGOODS = 7
 local SUBCLASS_METAL   = 7         -- Metal & Stone (ores)
@@ -66,14 +66,20 @@ local function Debug(m)  Msg("DEBUG", m) end
 -- ============================================================
 local function GetDayKey(ts) return date("%Y-%m-%d", ts or time()) end
 
+-- Standard coin colours: the unit letter is coloured, the number stays default.
+local function Coin(n, unit)
+    local colour = unit == "g" and "ffd100" or unit == "s" and "c7c7cf" or "eda55f"
+    return format("%d|cff%s%s|r", n, colour, unit)
+end
+
 local function Money(copper)
     if not copper or copper <= 0 then return "-" end
     local g = floor(copper / 10000)
     local s = floor((copper % 10000) / 100)
     local c = copper % 100
-    if g > 0 then return format("%dg %ds %dc", g, s, c)
-    elseif s > 0 then return format("%ds %dc", s, c)
-    else return format("%dc", c) end
+    if g > 0 then return Coin(g, "g") .. " " .. Coin(s, "s") .. " " .. Coin(c, "c")
+    elseif s > 0 then return Coin(s, "s") .. " " .. Coin(c, "c")
+    else return Coin(c, "c") end
 end
 
 local function Median(sorted)
@@ -398,7 +404,16 @@ local function AddVendorPrice(tooltip, itemID)
     for i = 1, tooltip:NumLines() do
         local fs = _G[name .. "TextLeft" .. i]
         local text = fs and fs:GetText()
-        if text and text:find(sellLabel, 1, true) then return end
+        if text and text:find(sellLabel, 1, true) then
+            -- Blizzard's own line: recolour the coin letters in place
+            local right = _G[name .. "TextRight" .. i]
+            local rtext = right and right:GetText()
+            if rtext and not rtext:find("|c", 1, true) then
+                local fixed = rtext:gsub("(%d+)([gsc])", function(n, u) return Coin(tonumber(n), u) end)
+                if fixed ~= rtext then right:SetText(fixed) tooltip:Show() end
+            end
+            return
+        end
     end
     local price = select(11, GetItemInfo(itemID))
     if not price or price <= 0 then return end
@@ -488,16 +503,57 @@ local COL_GAP   = 3
 local LEFT_W    = COL_START + COL_GAP * #COLS + 6
 for _, c in ipairs(COLS) do LEFT_W = LEFT_W + c.w end
 
+-- Item categories for the filter dropdown (item class IDs)
+local CATEGORY_CLASSES = { 0, 1, 2, 3, 4, 5, 7, 9, 15 }
+local function CategoryName(classID)
+    return (GetItemClassInfo and GetItemClassInfo(classID)) or ("Class " .. classID)
+end
+
+-- Trade goods subcategories (item subclass IDs under class 7). Some clients return no name
+-- for a subclass, so fall back to known names; the menu lists only subclasses present in scan data.
+local CLASS_TRADEGOODS_ID = 7
+local SUBCLASS_NAMES = {
+    [1] = "Parts", [2] = "Explosives", [3] = "Devices", [4] = "Jewelcrafting", [5] = "Cloth",
+    [6] = "Leather", [7] = "Metal & Stone", [8] = "Cooking", [9] = "Herb", [10] = "Elemental",
+    [11] = "Other", [12] = "Enchanting", [13] = "Materials", [16] = "Inscription",
+}
+local function SubCategoryName(classID, subID)
+    local name = GetItemSubClassInfo and GetItemSubClassInfo(classID, subID)
+    if name and name ~= "" then return name end
+    if classID == CLASS_TRADEGOODS_ID and SUBCLASS_NAMES[subID] then return SUBCLASS_NAMES[subID] end
+    return "Type " .. subID
+end
+
+-- Subclasses present in scan data, grouped by item class and sorted by name
+function FiveLoaves:SubclassesByClass()
+    local seen, byClass = {}, {}
+    for id in pairs(self.db.items) do
+        local classID, subID = select(6, GetItemInfoInstant(id))
+        if classID and subID then
+            seen[classID] = seen[classID] or {}
+            if not seen[classID][subID] then
+                seen[classID][subID] = true
+                byClass[classID] = byClass[classID] or {}
+                tinsert(byClass[classID], subID)
+            end
+        end
+    end
+    for classID, list in pairs(byClass) do
+        table.sort(list, function(a, b) return SubCategoryName(classID, a) < SubCategoryName(classID, b) end)
+    end
+    return byClass
+end
+
 local COLOR_LOW  = { 0.25, 1.0, 0.25 }
 local COLOR_HIGH = { 1.0, 0.4, 0.4 }
 
 local function MoneyShort(c)
     if not c or c <= 0 then return "-" end
     local g, s, cc = floor(c / 10000), floor((c % 10000) / 100), c % 100
-    if g >= 100 then return format("%dg", g)
-    elseif g > 0 then return format("%dg %ds", g, s)
-    elseif s > 0 then return format("%ds %dc", s, cc)
-    else return format("%dc", cc) end
+    if g >= 100 then return Coin(g, "g")
+    elseif g > 0 then return Coin(g, "g") .. " " .. Coin(s, "s")
+    elseif s > 0 then return Coin(s, "s") .. " " .. Coin(cc, "c")
+    else return Coin(cc, "c") end
 end
 
 local function ItemIcon(itemID)
@@ -541,6 +597,8 @@ function FiveLoaves:BuildRows()
     for id, item in pairs(source) do
         local name = (bag and not self.db.items[id]) and (ResolveName(id) or ("Item " .. id)) or self:EnsureItem(id).name
         if q == "" or name:lower():find(q, 1, true) or tostring(id) == q then
+          local classID, subID = select(6, GetItemInfoInstant(id))
+          if (not self.category or classID == self.category) and (not self.subCategory or subID == self.subCategory) then
             local s = self:GetStats(id, true)
             local avg = s or self:GetStats(id)
             local diff
@@ -558,6 +616,7 @@ function FiveLoaves:BuildRows()
                     avg = avg and avg.avgLow or 0, diff = diff, qty = bag and bag[id] or (e and e.qty or 0),
                 })
             end
+          end
         end
     end
     local key, desc = self.sortKey or "name", self.sortDesc
@@ -668,7 +727,7 @@ function FiveLoaves:RefreshList()
     self:UpdateBagControls()
     local label = (self.mode == "bag" and "In bags: ") or (self.mode == "buy" and "Buy now: ") or (self.mode == "sell" and "Sell now: ") or ""
     if #rows == 0 then
-        f.listInfo:SetText(label .. "no items")
+        f.listInfo:SetText(label .. "no items" .. ((self.mode == "buy" or self.mode == "sell") and format(" beyond %d%% of the average", floor(self.db.threshold * 100 + 0.5)) or ""))
     else
         f.listInfo:SetText(format("%s%d items (%d-%d) - scroll for more", label, #rows,
             self.offset + 1, min(#rows, self.offset + ROWS)))
@@ -1092,7 +1151,7 @@ function FiveLoaves:CreateMainFrame()
     button(f, "Bag", 50, "TOPLEFT", 156, -8, function() FiveLoaves:SetMode(FiveLoaves.mode == "bag" and "search" or "bag") end)
     button(f, "Buy now", 70, "TOPLEFT", 212, -8, function() FiveLoaves:SetMode("buy") end)
     button(f, "Sell now", 70, "TOPLEFT", 288, -8, function() FiveLoaves:SetMode("sell") end)
-    button(f, "Export", 70, "TOPLEFT", 364, -8, function() FiveLoaves:ShowExport() end)
+    local Export = button(f, "Export", 70, "TOPLEFT", 364, -8, function() FiveLoaves:ShowExport() end)
 
     local search = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
     search:SetSize(150, 20)
@@ -1108,6 +1167,58 @@ function FiveLoaves:CreateMainFrame()
     local sl = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     sl:SetPoint("RIGHT", search, "LEFT", -8, 0)
     sl:SetText("Search:")
+
+    -- category filter (applies to search, Bag, Buy now and Sell now)
+    local cat = CreateFrame("Frame", "FiveLoavesCategoryDropdown", f, "UIDropDownMenuTemplate")
+    cat:SetPoint("LEFT", Export, "RIGHT", -14, -2)
+    UIDropDownMenu_SetWidth(cat, 100)
+    local function label()
+        if not FiveLoaves.category then return "All categories" end
+        local text = CategoryName(FiveLoaves.category)
+        if FiveLoaves.subCategory then text = SubCategoryName(FiveLoaves.category, FiveLoaves.subCategory) end
+        return text
+    end
+    local function pick(_, classID, subID)
+        FiveLoaves.category, FiveLoaves.subCategory = classID, subID
+        UIDropDownMenu_SetText(cat, label())
+        CloseDropDownMenus()
+        FiveLoaves.offset = 0
+        FiveLoaves:RefreshList()
+    end
+    -- Categories with subclasses open a side menu; clicking the category itself shows all of it
+    UIDropDownMenu_Initialize(cat, function(_, level)
+        local info
+        local subs = FiveLoaves:SubclassesByClass()
+        if level == 2 then
+            local classID = UIDROPDOWNMENU_MENU_VALUE
+            info = UIDropDownMenu_CreateInfo()
+            info.text, info.arg1, info.arg2, info.func = "All " .. CategoryName(classID), classID, nil, pick
+            info.checked = FiveLoaves.category == classID and FiveLoaves.subCategory == nil
+            UIDropDownMenu_AddButton(info, 2)
+            for _, subID in ipairs(subs[classID] or {}) do
+                info = UIDropDownMenu_CreateInfo()
+                info.text, info.arg1, info.arg2, info.func = SubCategoryName(classID, subID), classID, subID, pick
+                info.checked = FiveLoaves.category == classID and FiveLoaves.subCategory == subID
+                UIDropDownMenu_AddButton(info, 2)
+            end
+            return
+        end
+        info = UIDropDownMenu_CreateInfo()
+        info.text, info.func, info.checked = "All categories", pick, FiveLoaves.category == nil
+        UIDropDownMenu_AddButton(info)
+        for _, classID in ipairs(CATEGORY_CLASSES) do
+            info = UIDropDownMenu_CreateInfo()
+            info.text, info.arg1, info.func = CategoryName(classID), classID, pick
+            info.checked = FiveLoaves.category == classID and FiveLoaves.subCategory == nil
+            if subs[classID] and #subs[classID] > 1 then
+                info.hasArrow, info.value = true, classID
+                info.checked = FiveLoaves.category == classID
+            end
+            UIDropDownMenu_AddButton(info)
+        end
+    end)
+    UIDropDownMenu_SetText(cat, "All categories")
+    f.category = cat
 
     f.statusText = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.statusText:SetPoint("TOPLEFT", 12, -38)
