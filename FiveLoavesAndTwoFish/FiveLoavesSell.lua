@@ -765,7 +765,13 @@ local function HookBags()
     if ContainerFrameItemButton_OnClick then
         hooksecurefunc("ContainerFrameItemButton_OnClick", function(self, button)
             if button == "RightButton" and AHReady() and not IsModifierKeyDown() then
-                Sell:Pick(LocationFromButton(self))
+                local loc = LocationFromButton(self)
+                local W = FiveLoaves.Watch
+                if W and W:IsActive() then
+                    W:HandleBagClick(loc)
+                else
+                    Sell:Pick(loc)
+                end
             end
         end)
     end

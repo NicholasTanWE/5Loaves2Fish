@@ -225,6 +225,11 @@ function Craft:Compute()
                 r.deUnpriced = unpriced
             else
                 r.deReason, r.pending = info, pending
+                -- not disenchantable: judge it like a potion (materials vs AH value of the item)
+                if not pending then
+                    r.deMode = false
+                    r.noDE = info
+                end
             end
         end
     end
@@ -291,6 +296,10 @@ function Craft:Update()
         add("|cffffd100Sell materials:|r " .. M(r.matsNet))
         if r.deNet then add("|cffffd100Craft + disenchant:|r " .. M(max(r.deNet - r.vendorCost, 0))) end
     else
+        if r.noDE then
+            add("")
+            add("|cffffd100Disenchant:|r |cff999999" .. r.noDE .. "|r")
+        end
         add("|cffffd100Item on AH:|r " .. (r.ahNet and (M(r.ahNet) .. " |cff999999(after cut)|r") or "|cff999999n/a|r"))
     end
 

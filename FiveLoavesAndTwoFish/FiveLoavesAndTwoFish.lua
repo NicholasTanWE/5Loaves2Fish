@@ -13,7 +13,8 @@ local ADDON_NAME, ns = ...
 -- Constants
 -- ============================================================
 local HISTORY_DAYS  = 30
-local MIN_DAYS_FOR_DEALS = 1   -- earlier days (excluding today) needed before an item can be flagged
+local MIN_DAYS_FOR_DEALS = 3   -- earlier days (excluding today) needed before an item can be flagged
+local MIN_QTY_FOR_DEALS = 5     -- minimum units seen in the latest scan, so 1-unit outliers aren't flagged
 
 local CLASS_TRADEGOODS = 7
 local SUBCLASS_METAL   = 7         -- Metal & Stone (ores)
@@ -26,6 +27,9 @@ local HIGH_BOUND = 3.0
 local defaults = {
     threshold = 0.20,   -- 20% below/above 30d average counts as a deal
     items     = {},
+    watch     = {},
+    watchBuyThreshold = 0.20,  -- Watch tab: Buy when this far below the 7d average
+    watchSellThreshold = 0.20, -- Watch tab: Sell when this far above the 7d average
     lastScan  = 0,
     debug     = false,
 }
@@ -65,6 +69,13 @@ local function Debug(m)  Msg("DEBUG", m) end
 -- Utility
 -- ============================================================
 local function GetDayKey(ts) return date("%Y-%m-%d", ts or time()) end
+
+-- Enough history and enough volume in the latest scan to trust a deal signal
+local function DealEligible(item, s)
+    if not (s and s.days >= MIN_DAYS_FOR_DEALS and item.currentLow and s.avgLow > 0) then return false end
+    local e = item.lastSeen and item.lastSeen > 0 and item.history[GetDayKey(item.lastSeen)]
+    return e and (e.qty or 0) >= MIN_QTY_FOR_DEALS or false
+end
 
 -- Standard coin colours: the unit letter is coloured, the number stays default.
 local function Coin(n, unit)
@@ -297,7 +308,7 @@ function FiveLoaves:FindDeals(kind)
     for itemID, item in pairs(self.db.items) do
         local s = self:GetStats(itemID, true)
         local cur = item.currentLow
-        if s and s.days >= MIN_DAYS_FOR_DEALS and cur and s.avgLow > 0 then
+        if DealEligible(item, s) then
             local diff = (cur - s.avgLow) / s.avgLow
             if (kind == "buy" and diff <= -th) or (kind == "sell" and diff >= th) then
                 tinsert(out, { id = itemID, name = item.name, diff = diff, cur = cur, avg = s.avgLow })
@@ -500,7 +511,7 @@ local COLS = {
 }
 local COL_START = 44
 local COL_GAP   = 3
-local LEFT_W    = COL_START + COL_GAP * #COLS + 6
+local LEFT_W    = COL_START + COL_GAP * #COLS + 6 + 24 -- + star column
 for _, c in ipairs(COLS) do LEFT_W = LEFT_W + c.w end
 
 -- Item categories for the filter dropdown (item class IDs)
@@ -562,6 +573,29 @@ local function ItemIcon(itemID)
         or 134400
 end
 
+-- Clickable watchlist star (the Auction House's own 5-point favourite star); lit when watched
+local STAR_ON, STAR_OFF = "auctionhouse-icon-favorite", "auctionhouse-icon-favorite-off"
+
+local function SetStar(btn, on)
+    btn.tex:SetAtlas(on and STAR_ON or STAR_OFF)
+end
+
+local function CreateStar(parent, onClick)
+    local b = CreateFrame("Button", nil, parent)
+    b:SetSize(18, 18)
+    b.tex = b:CreateTexture(nil, "ARTWORK")
+    b.tex:SetAllPoints()
+    b:SetScript("OnClick", onClick)
+    b:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(self.watched and "Remove from watchlist" or "Add to watchlist")
+        GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    SetStar(b, false)
+    return b
+end
+
 -- Tradable items in the bags (itemID -> total count); soulbound and quest items are skipped.
 function FiveLoaves:GetBagItems()
     local out = {}
@@ -602,7 +636,7 @@ function FiveLoaves:BuildRows()
             local s = self:GetStats(id, true)
             local avg = s or self:GetStats(id)
             local diff
-            if s and s.days >= MIN_DAYS_FOR_DEALS and item.currentLow and s.avgLow > 0 then
+            if DealEligible(item, s) then
                 diff = (item.currentLow - s.avgLow) / s.avgLow
             end
             local keep = true
@@ -718,6 +752,9 @@ function FiveLoaves:RefreshList()
             b.check:SetShown(self.mode == "bag")
             b.check:SetChecked(self.bagSel[r.id] and true or false)
             b.sel:SetShown(r.id == self.selected)
+            local watched = self.db.watch[r.id] and true or false
+            b.star.watched = watched
+            SetStar(b.star, watched)
             b:Show()
         else
             b:Hide()
@@ -856,7 +893,6 @@ function FiveLoaves:RenderDetail()
     local showGraph = (self.rightView or "graph") == "graph"
     f.graph:SetShown(showGraph)
     f.history:SetShown(not showGraph)
-
     if not item then
         f.title:SetText(id and ("No data for item " .. id) or "")
         f.stats:SetText(id and "Scan the AH first." or "Click an item in the table.\nAlt+click a bag item to jump to it.")
@@ -975,12 +1011,17 @@ end
 
 function FiveLoaves:InstallTabInner()
     self:CreateMainFrame()
-    self.selectTab = AddAHTab(TAB_ID, self.mainFrame, "Loaves", "Five Loaves and Two Fish")
+    self.selectTab = AddAHTab(TAB_ID, self.mainFrame, "Scan", "Five Loaves and Two Fish")
     if self.CreateSellFrame then
         self:CreateSellFrame()
-        self.selectSell = AddAHTab(TAB_ID .. "Sell", self.sellFrame, "Loaves Sell", "Five Loaves - Create Auction")
+        self.selectSell = AddAHTab(TAB_ID .. "Sell", self.sellFrame, "Create Auction", "Five Loaves - Create Auction")
+    end
+    if self.CreateWatchFrame then
+        self:CreateWatchFrame()
+        self.selectWatch = AddAHTab(TAB_ID .. "Watch", self.watchFrame, "Watch", "Five Loaves - Watchlist")
     end
 end
+
 local function BuildTable(f)
     f.headers = {}
     local x = COL_START
@@ -1041,6 +1082,10 @@ local function BuildTable(f)
             b.cells[j] = fs
         end
         b:SetScript("OnClick", function(self) FiveLoaves:ShowItem(self.itemID) end)
+        b.star = CreateStar(b, function(self)
+            FiveLoaves.Watch:Toggle(self:GetParent().itemID)
+        end)
+        b.star:SetPoint("RIGHT", b, "RIGHT", -2, 0)
         b:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:SetHyperlink("item:" .. self.itemID)
@@ -1360,7 +1405,7 @@ function FiveLoaves:UpdateStatus(text)
 end
 
 FiveLoaves.util = {
-    Money = Money, MoneyShort = MoneyShort, ItemIcon = ItemIcon,
+    Money = Money, MoneyShort = MoneyShort, ItemIcon = ItemIcon, CreateStar = CreateStar, SetStar = SetStar,
     Action = Action, Info = Info, Warn = Warn, Error = Error, Debug = Debug,
     COLOR_LOW = COLOR_LOW, COLOR_HIGH = COLOR_HIGH,
 }
@@ -1418,7 +1463,7 @@ SlashCmdList["FIVELOAVES"] = function(msg)
     elseif cmd == "buy" or cmd == "sell" then
         local deals = FiveLoaves:FindDeals(cmd)
         if #deals == 0 then
-            Info("No " .. cmd .. " deals (need " .. MIN_DAYS_FOR_DEALS .. "+ days of history).")
+            Info("No " .. cmd .. " deals (need " .. MIN_DAYS_FOR_DEALS .. "+ days of history and " .. MIN_QTY_FOR_DEALS .. "+ units in the latest scan).")
         end
         for _, d in ipairs(deals) do
             Info(format("%s: now %s vs avg %s (%+d%%)", d.name, Money(d.cur), Money(d.avg), floor(d.diff * 100)))
@@ -1447,6 +1492,16 @@ SlashCmdList["FIVELOAVES"] = function(msg)
         for _ in pairs(FiveLoaves.db.items) do n = n + 1 end
         Info(format("Tracking %d items. Last scan: %s", n,
             FiveLoaves.db.lastScan > 0 and date("%Y-%m-%d %H:%M", FiveLoaves.db.lastScan) or "never"))
+    elseif cmd == "watch" or cmd == "unwatch" then
+        local W = FiveLoaves.Watch
+        if arg == "" then
+            Info("Use /5l2f watch <item link | id | name> and /5l2f unwatch <item link | id | name>")
+        elseif cmd == "watch" then
+            W:Add(arg)
+        else
+            local id = W.IDOf(arg)
+            if id then W:Remove(id) else Warn("Item not recognised.") end
+        end
     elseif cmd == "debug" then
         FiveLoaves.db.debug = not FiveLoaves.db.debug
         Action("Debug " .. (FiveLoaves.db.debug and "ON" or "OFF"))
@@ -1458,6 +1513,7 @@ SlashCmdList["FIVELOAVES"] = function(msg)
         print("  /5l2f buy | sell  - List deals vs 30d average")
         print("  /5l2f threshold N - Deal threshold in percent")
         print("  /5l2f export      - CSV for Excel")
+        print("  /5l2f watch | unwatch <item> - Manage the Watch tab")
         print("  /5l2f status | debug")
     end
 end

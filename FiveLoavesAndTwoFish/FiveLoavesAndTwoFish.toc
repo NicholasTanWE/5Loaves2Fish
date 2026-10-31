@@ -7,5 +7,6 @@
 
 FiveLoavesAndTwoFish.lua
 FiveLoavesSell.lua
+FiveLoavesWatch.lua
 FiveLoavesCraft.lua
 FiveLoavesVendor.lua

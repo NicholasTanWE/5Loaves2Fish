@@ -2,7 +2,9 @@ local ADDON = "GoodAndFaithfulServant"
 
 -- Source tags. AH is shown separately from everything else.
 local SOURCES = { "AH", "Vendor", "Mail", "Other" }
-local RANGES = { { "Today", 1 }, { "7 days", 7 }, { "30 days", 30 } }
+local RANGES = { { "Session", "session" }, { "Today", 1 }, { "7 days", 7 }, { "30 days", 30 }, { "All time", "all" } }
+
+local session = {}  -- per-source totals since login/reload or the last reset; separate from the daily records
 
 local db
 local lastMoney
@@ -45,6 +47,13 @@ local function Record(source, delta)
         day[source] = s
     end
     if delta > 0 then s.inc = s.inc + delta else s.exp = s.exp - delta end
+
+    local ss = session[source]
+    if not ss then
+        ss = { inc = 0, exp = 0 }
+        session[source] = ss
+    end
+    if delta > 0 then ss.inc = ss.inc + delta else ss.exp = ss.exp - delta end
 end
 
 local function OnMoneyChanged()
@@ -78,19 +87,28 @@ end
 local function Summarize(days)
     local t = { AH = { inc = 0, exp = 0 }, Other = { inc = 0, exp = 0 }, bySource = {} }
     for _, s in ipairs(SOURCES) do t.bySource[s] = { inc = 0, exp = 0 } end
-    local now = time()
-    for i = 0, days - 1 do
-        local day = db.days[date("%Y-%m-%d", now - i * 86400)]
-        if day then
-            for src, v in pairs(day) do
-                local bucket = (src == "AH") and t.AH or t.Other
-                bucket.inc = bucket.inc + v.inc
-                bucket.exp = bucket.exp + v.exp
-                local b = t.bySource[src]
-                if b then
-                    b.inc = b.inc + v.inc
-                    b.exp = b.exp + v.exp
-                end
+    local function accumulate(src, v)
+        local bucket = (src == "AH") and t.AH or t.Other
+        bucket.inc = bucket.inc + v.inc
+        bucket.exp = bucket.exp + v.exp
+        local b = t.bySource[src]
+        if b then
+            b.inc = b.inc + v.inc
+            b.exp = b.exp + v.exp
+        end
+    end
+    if days == "session" then
+        for src, v in pairs(session) do accumulate(src, v) end
+    elseif days == "all" then
+        for _, day in pairs(db.days) do
+            for src, v in pairs(day) do accumulate(src, v) end
+        end
+    else
+        local now = time()
+        for i = 0, days - 1 do
+            local day = db.days[date("%Y-%m-%d", now - i * 86400)]
+            if day then
+                for src, v in pairs(day) do accumulate(src, v) end
             end
         end
     end
@@ -159,8 +177,8 @@ local function BuildFrame()
     frame.rangeButtons = {}
     for i, r in ipairs(RANGES) do
         local btn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-        btn:SetSize(80, 22)
-        btn:SetPoint("TOPLEFT", 14 + (i - 1) * 85, -30)
+        btn:SetSize(66, 22)
+        btn:SetPoint("TOPLEFT", 14 + (i - 1) * 70, -30)
         btn:SetText(r[1])
         btn:SetScript("OnClick", function()
             rangeIndex = i
@@ -173,6 +191,21 @@ local function BuildFrame()
     frame.text:SetPoint("TOPLEFT", 16, -62)
     frame.text:SetJustifyH("LEFT")
     frame.text:SetJustifyV("TOP")
+
+    local reset = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    reset:SetSize(170, 22)
+    reset:SetPoint("BOTTOMLEFT", 14, 12)
+    reset:SetText("Reset session income")
+    reset:SetScript("OnClick", function()
+        wipe(session)
+        Refresh()
+    end)
+    reset:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Resets the Session tally only; Today, 7 day, 30 day and All time are unaffected.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    reset:SetScript("OnLeave", function() GameTooltip:Hide() end)
     frame:SetScript("OnShow", Refresh)
 end
 
@@ -255,6 +288,21 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         BuildMinimapButton()
         if TakeInboxMoney then hooksecurefunc("TakeInboxMoney", TagMail) end
         if AutoLootMailItem then hooksecurefunc("AutoLootMailItem", TagMail) end
+        -- Posting charges a deposit; tag it as AH even if a stale mail tag is active
+        local function TagDeposit()
+            mailTag, mailTagExpires = "AH", GetTime() + 3
+        end
+        if C_AuctionHouse then
+            if C_AuctionHouse.PostItem then hooksecurefunc(C_AuctionHouse, "PostItem", TagDeposit) end
+            if C_AuctionHouse.PostCommodity then hooksecurefunc(C_AuctionHouse, "PostCommodity", TagDeposit) end
+        end
+        if PostAuction then hooksecurefunc("PostAuction", TagDeposit) end
+        -- Postage (and money attached to a sent mail) is a Mail expense
+        if SendMail then
+            hooksecurefunc("SendMail", function()
+                mailTag, mailTagExpires = "Mail", GetTime() + 3
+            end)
+        end
     elseif event == "PLAYER_ENTERING_WORLD" then
         lastMoney = GetMoney()
     elseif event == "PLAYER_MONEY" then
